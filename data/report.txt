@@ -1,0 +1,69 @@
+San Diego Street Conditions Classification Report
+ 
+Merged File
+No. of Rows in Merged File: 22,998
+No. of Columns in Merged File: 15
+ 
+Streets Overall Condition Index (OCI)
+No. of Rows in OCI File: 30,712
+No. of Columns in OCI File: 12
+ 
++----+--------------+------------------+	
+|    | ID Columns   | Distinct Count   |	
+|----+--------------+------------------|	
+|  0 | seg_id       | 30,712           |	
++----+--------------+------------------+
+ 
+Street Repair Projects
+No. of Rows in Street Repairs File: 23,433
+No. of Columns in Street Repairs File: 19
+ 
++----+--------------+------------------+	
+|    | ID Columns   | Distinct Count   |	
+|----+--------------+------------------|	
+|  0 | pve_id       | 23,433           |	
+|  1 | seg_id       | 18,072           |	
+|  2 | project_id   | 103              |	
++----+--------------+------------------+
+ 
+Traffic Volumes
+No. of Rows in Traffic Volumes File: 12,390
+No. of Columns in Traffic Volumes File: 10
+ 
+Traffic Volume IDs DO NOT exist.
+ 
++----+------------------------------------------------------+	
+|    | Shared Columns Between Street Repairs and OCI File   |	
+|----+------------------------------------------------------|	
+|  0 | seg_id                                               |	
+|  1 | street_to                                            |	
+|  2 | street_from                                          |	
++----+------------------------------------------------------+
+ 
+Matching Pve_IDs Across Files	
+-------------------------------	
+Matching Pve_IDs Across Files
+Streets OCI: pve_id = False
+Street Repair Projects: pve_id = True
+Traffic Volumes: pve_id = False
+Merged Dataframe: pve_id = False
+ 
+There are no Streets OCI pve_ids in Streets OCI.
+There are 23,433 Street Repair Projects pve_ids in Streets OCI.
+There are no Traffic Volumes pve_ids in Streets OCI.
+There are no Merged Dataframe pve_ids in Streets OCI.
+ 
+Matching Seg_IDs Across Files	
+-------------------------------	
+Matching Seg_IDs Across Files
+Streets OCI: seg_id = True
+There are 30,712 unique seg_id values in Streets OCI.
+Street Repair Projects: seg_id = True
+There are 18,072 unique seg_id values in Street Repair Projects.
+Traffic Volumes: seg_id = False
+Merged Dataframe: seg_id = False
+ 
+There are 30,712 Streets OCI seg_ids in Street OCI.
+There are 23,433 Street Repair Projects seg_ids in Street OCI.
+There are no Traffic Volumes seg_ids in Streets OCI.
+There are no Merged Dataframe seg_ids in Streets OCI.
