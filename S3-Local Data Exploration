@@ -1,0 +1,40 @@
+!pip install --quiet boto3 pandas matplotlib seaborn
+
+import boto3
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import StringIO
+
+bucket_name = "breast-cancer-proteomes"
+
+# helper function to read CSV from S3 into a DataFrame
+def read_csv_from_s3(bucket, file_key):
+    """Reads a CSV file from S3 into a Pandas DataFrame."""
+    s3 = boto3.client("s3")
+    response = s3.get_object(Bucket=bucket, Key=file_key)
+    csv_content = response["Body"].read().decode("utf-8")
+    return pd.read_csv(StringIO(csv_content))
+
+df_proteomes = read_csv_from_s3(bucket_name, "77_cancer_proteomes_CPTAC_itraq.csv")
+df_clinical = read_csv_from_s3(bucket_name, "clinical_data_breast_cancer.csv")
+df_pam50 = read_csv_from_s3(bucket_name, "PAM50_proteins.csv")
+
+# look aat first few rows, shapes
+print("----- 77_cancer_proteomes_CPTAC_itraq.csv -----")
+display(df_proteomes.head())
+print("Shape:", df_proteomes.shape, "\n")
+
+print("----- clinical_data_breast_cancer.csv -----")
+display(df_clinical.head())
+print("Shape:", df_clinical.shape, "\n")
+
+print("----- PAM50_proteins.csv -----")
+display(df_pam50.head())
+print("Shape:", df_pam50.shape, "\n")
+
+# missing values in df_proteomes
+print("Missing values in df_proteomes:\n", df_proteomes.isnull().sum())
+
+# example: are 'log2_ratio' columns numeric?
+print("\nData types in df_proteomes:\n", df_proteomes.dtypes)
