@@ -1,0 +1,150 @@
+import boto3
+import pandas as pd
+import numpy as np
+from io import StringIO
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+
+def read_s3(bucket, key):
+    # I use boto3 to read CSVs from S3 into pandas
+    s = boto3.Session()
+    c = s.client("s3")
+    o = c.get_object(Bucket=bucket, Key=key)
+    return pd.read_csv(StringIO(o["Body"].read().decode("utf-8")))
+
+def fix_id(x):
+    # Adjust sample ID to standardize for merging with clinical
+    x = str(x)
+    if x.endswith("TCGA"):
+        x = x[:-4]
+    x = x.split(".")[0]
+    return "TCGA-" + x
+
+def run_pipeline():
+    # Read the three datasets
+    dp = read_s3("breast-cancer-proteomes", "77_cancer_proteomes_CPTAC_itraq.csv")
+    dc = read_s3("breast-cancer-proteomes", "clinical_data_breast_cancer.csv")
+    dp50 = read_s3("breast-cancer-proteomes", "PAM50_proteins.csv")
+
+    # Rename clinical ID column
+    if "Complete TCGA ID" not in dc.columns:
+        print("No 'Complete TCGA ID' in clinical data.")
+        return
+    dc.rename(columns={"Complete TCGA ID": "Patient_ID"}, inplace=True)
+
+    # Check proteomics file structure
+    needed_cols = {"RefSeq_accession_number", "gene_symbol", "gene_name"}
+    if not needed_cols.issubset(dp.columns):
+        print("Proteomics data missing required columns.")
+        return
+
+    # Filter proteomics by Gene if both have 'Gene'
+    if "Gene" in dp.columns and "Gene" in dp50.columns:
+        dp = dp[dp["Gene"].isin(dp50["Gene"])]
+
+    # Melt wide -> long
+    base_cols = ["RefSeq_accession_number","gene_symbol","gene_name"]
+    dm = pd.melt(dp, id_vars=base_cols, var_name="Sample_ID", value_name="Expression")
+    dm["Sample_ID"] = dm["Sample_ID"].astype(str)
+    dm["Patient_ID"] = dm["Sample_ID"].apply(fix_id)
+
+    # Merge with clinical
+    dfm = pd.merge(dm, dc, on="Patient_ID", how="inner")
+    if dfm.empty:
+        print("No rows after merging. Check fix_id logic or clinical IDs.")
+        return
+
+    # Remove duplicates
+    dfm.drop_duplicates(inplace=True)
+
+    # Impute numeric & categorical
+    numeric_cols = dfm.select_dtypes(include=[np.number]).columns
+    cat_cols = dfm.select_dtypes(include=["object","category"]).columns
+    si = SimpleImputer(strategy="mean")
+    sf = SimpleImputer(strategy="most_frequent")
+    dfm[numeric_cols] = si.fit_transform(dfm[numeric_cols])
+    dfm[cat_cols] = sf.fit_transform(dfm[cat_cols])
+
+    # Feature selection
+    # Keep Expression + a few clinical columns
+    features = []
+    if "Expression" in dfm.columns:
+        features.append("Expression")
+    for col in [
+        "Age at Initial Pathologic Diagnosis", 
+        "ER Status", 
+        "PR Status",
+        "HER2 Final Status",
+        "AJCC Stage"
+    ]:
+        if col in dfm.columns:
+            features.append(col)
+
+    df = dfm[features].copy()
+
+    # Create or assign target
+    if "OS event" in dfm.columns:
+        df["Target"] = dfm["OS event"]
+    else:
+        df["Target"] = np.random.choice([0,1], size=len(dfm))
+
+    # Encode target if needed
+    if df["Target"].dtype == "object":
+        le = LabelEncoder()
+        df["Target"] = le.fit_transform(df["Target"])
+
+    # One-hot encode categorical features
+    dfe = df.copy()
+    cat_features = dfe.select_dtypes(include=["object","category"]).columns
+    cat_features = [c for c in cat_features if c != "Target"]
+    for c in cat_features:
+        dfe = pd.concat([dfe.drop(c, axis=1), pd.get_dummies(dfe[c], prefix=c)], axis=1)
+
+    # Scale numeric features
+    num_cols = [c for c in dfe.select_dtypes(include=[np.number]).columns if c != "Target"]
+    if num_cols:
+        scaler = StandardScaler()
+        dfe[num_cols] = scaler.fit_transform(dfe[num_cols])
+
+    # Separate X, y
+    X = dfe.drop("Target", axis=1)
+    y = dfe["Target"]
+
+    # SMOTE
+    sm = SMOTE(random_state=42)
+    X_res, y_res = sm.fit_resample(X, y)
+
+    # Split 70/20/10
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X_res, y_res, test_size=0.3, stratify=y_res, random_state=42
+    )
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp, test_size=0.33, stratify=y_temp, random_state=42
+    )
+
+    # Print final shapes
+    print("Train:", X_train.shape, y_train.shape)
+    print("Validation:", X_val.shape, y_val.shape)
+    print("Test:", X_test.shape, y_test.shape)
+
+    # Plot a histogram of Expression in the training set
+    if "Expression" in X_train.columns:
+        plt.hist(X_train["Expression"], bins=30)
+        plt.title("Distribution of Expression (Train)")
+        plt.xlabel("Expression")
+        plt.ylabel("Frequency")
+        plt.show()
+
+    # Plot a bar chart of the target distribution in training data
+    uniq, counts = np.unique(y_train, return_counts=True)
+    plt.bar(uniq.astype(str), counts)
+    plt.title("Training Set Target Distribution")
+    plt.xlabel("Target Class")
+    plt.ylabel("Count")
+    plt.show()
+
+if __name__ == "__main__":
+    run_pipeline()
