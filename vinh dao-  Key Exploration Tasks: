@@ -1,0 +1,53 @@
+Step 3: Data Quality Checks
+1. Identify Missing Values
+missing_values = df.isnull().sum()
+print("Missing Values Per Column:\n", missing_values)
+Visualize Missing Data
+plt.figure(figsize=(10,6))
+sns.heatmap(df.isnull(), cbar=False, cmap="viridis")
+plt.title("Missing Data Heatmap")
+plt.show()
+2. Validate Data Types
+Ensure that the log2_ratio column is numeric:
+print(df.dtypes)  # Check data types
+# Convert log2_ratio to numeric if needed
+df["log2_ratio"] = pd.to_numeric(df["log2_ratio"], errors="coerce")
+print("Updated Data Types:\n", df.dtypes)
+Step 4: Bias & Ethical Checks
+1. Assess Sample Diversity (Age, Ethnicity)
+If the dataset contains age or ethnicity columns, analyze their distribution:
+if "age" in df.columns:
+    plt.hist(df["age"].dropna(), bins=20, edgecolor="k")
+    plt.xlabel("Age")
+    plt.ylabel("Count")
+    plt.title("Age Distribution")
+    plt.show()
+else:
+    print("No 'age' column found.")
+
+if "ethnicity" in df.columns:
+    df["ethnicity"].value_counts().plot(kind="bar", color="skyblue")
+    plt.xlabel("Ethnicity")
+    plt.ylabel("Count")
+    plt.title("Ethnicity Distribution")
+    plt.show()
+else:
+    print("No 'ethnicity' column found.")
+2. Check Cancer Subtype Representation
+If the dataset includes subtypes (e.g., HER2+, ER+), analyze them:
+if "cancer_subtype" in df.columns:
+    df["cancer_subtype"].value_counts().plot(kind="bar", color="orange")
+    plt.xlabel("Cancer Subtype")
+    plt.ylabel("Count")
+    plt.title("Cancer Subtype Distribution")
+    plt.show()
+else:
+    print("No 'cancer_subtype' column found.")
+Step 5: Save Processed Data (Optional)
+Save the cleaned dataset back to S3:
+# Save locally
+df.to_csv("cleaned_data.csv", index=False)
+
+# Upload to S3
+s3.upload_file("cleaned_data.csv", bucket_name, "processed/cleaned_data.csv")
+print("Processed data uploaded to S3.")
