@@ -46,7 +46,7 @@ def run_pipeline():
         dp = dp[dp["Gene"].isin(dp50["Gene"])]
 
     # Melt wide -> long
-    base_cols = ["RefSeq_accession_number","gene_symbol","gene_name"]
+    base_cols = ["RefSeq_accession_number", "gene_symbol", "gene_name"]
     dm = pd.melt(dp, id_vars=base_cols, var_name="Sample_ID", value_name="Expression")
     dm["Sample_ID"] = dm["Sample_ID"].astype(str)
     dm["Patient_ID"] = dm["Sample_ID"].apply(fix_id)
@@ -62,20 +62,19 @@ def run_pipeline():
 
     # Impute numeric & categorical
     numeric_cols = dfm.select_dtypes(include=[np.number]).columns
-    cat_cols = dfm.select_dtypes(include=["object","category"]).columns
+    cat_cols = dfm.select_dtypes(include=["object", "category"]).columns
     si = SimpleImputer(strategy="mean")
     sf = SimpleImputer(strategy="most_frequent")
     dfm[numeric_cols] = si.fit_transform(dfm[numeric_cols])
     dfm[cat_cols] = sf.fit_transform(dfm[cat_cols])
 
     # Feature selection
-    # Keep Expression + a few clinical columns
     features = []
     if "Expression" in dfm.columns:
         features.append("Expression")
     for col in [
-        "Age at Initial Pathologic Diagnosis", 
-        "ER Status", 
+        "Age at Initial Pathologic Diagnosis",
+        "ER Status",
         "PR Status",
         "HER2 Final Status",
         "AJCC Stage"
@@ -89,7 +88,7 @@ def run_pipeline():
     if "OS event" in dfm.columns:
         df["Target"] = dfm["OS event"]
     else:
-        df["Target"] = np.random.choice([0,1], size=len(dfm))
+        df["Target"] = np.random.choice([0, 1], size=len(dfm))
 
     # Encode target if needed
     if df["Target"].dtype == "object":
@@ -98,7 +97,7 @@ def run_pipeline():
 
     # One-hot encode categorical features
     dfe = df.copy()
-    cat_features = dfe.select_dtypes(include=["object","category"]).columns
+    cat_features = dfe.select_dtypes(include=["object", "category"]).columns
     cat_features = [c for c in cat_features if c != "Target"]
     for c in cat_features:
         dfe = pd.concat([dfe.drop(c, axis=1), pd.get_dummies(dfe[c], prefix=c)], axis=1)
@@ -113,35 +112,35 @@ def run_pipeline():
     X = dfe.drop("Target", axis=1)
     y = dfe["Target"]
 
-    # SMOTE
-    sm = SMOTE(random_state=42)
-    X_res, y_res = sm.fit_resample(X, y)
-
-    # Split 70/20/10
+    # Split 70/20/10 BEFORE SMOTE
     X_train, X_temp, y_train, y_temp = train_test_split(
-        X_res, y_res, test_size=0.3, stratify=y_res, random_state=42
+        X, y, test_size=0.3, stratify=y, random_state=42
     )
     X_val, X_test, y_val, y_test = train_test_split(
         X_temp, y_temp, test_size=0.33, stratify=y_temp, random_state=42
     )
 
+    # Apply SMOTE ONLY to training set
+    sm = SMOTE(random_state=42)
+    X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+
     # Print final shapes
-    print("Train:", X_train.shape, y_train.shape)
+    print("Train:", X_train_res.shape, y_train_res.shape)
     print("Validation:", X_val.shape, y_val.shape)
     print("Test:", X_test.shape, y_test.shape)
 
     # Plot a histogram of Expression in the training set
-    if "Expression" in X_train.columns:
-        plt.hist(X_train["Expression"], bins=30)
+    if "Expression" in X_train_res.columns:
+        plt.hist(X_train_res["Expression"], bins=30)
         plt.title("Distribution of Expression (Train)")
         plt.xlabel("Expression")
         plt.ylabel("Frequency")
         plt.show()
 
     # Plot a bar chart of the target distribution in training data
-    uniq, counts = np.unique(y_train, return_counts=True)
+    uniq, counts = np.unique(y_train_res, return_counts=True)
     plt.bar(uniq.astype(str), counts)
-    plt.title("Training Set Target Distribution")
+    plt.title("Training Set Target Distribution (After SMOTE)")
     plt.xlabel("Target Class")
     plt.ylabel("Count")
     plt.show()
