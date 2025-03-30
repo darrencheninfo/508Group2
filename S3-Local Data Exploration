@@ -20,7 +20,7 @@ df_proteomes = read_csv_from_s3(bucket_name, "77_cancer_proteomes_CPTAC_itraq.cs
 df_clinical = read_csv_from_s3(bucket_name, "clinical_data_breast_cancer.csv")
 df_pam50 = read_csv_from_s3(bucket_name, "PAM50_proteins.csv")
 
-# look aat first few rows, shapes
+# look at first few rows, shapes
 print("----- 77_cancer_proteomes_CPTAC_itraq.csv -----")
 display(df_proteomes.head())
 print("Shape:", df_proteomes.shape, "\n")
@@ -38,3 +38,9 @@ print("Missing values in df_proteomes:\n", df_proteomes.isnull().sum())
 
 # example: are 'log2_ratio' columns numeric?
 print("\nData types in df_proteomes:\n", df_proteomes.dtypes)
+
+# Visualize missing data
+plt.figure(figsize=(10,5))
+sns.heatmap(df.isnull(), cbar=False, cmap="Reds"
+plt.title("Missing Data Heatmap)
+plt.show()
