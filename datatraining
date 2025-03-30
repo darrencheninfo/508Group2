@@ -1,0 +1,271 @@
+import boto3
+import pandas as pd
+import numpy as np
+import os
+from io import StringIO
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import sagemaker
+from sagemaker import Session
+from sagemaker.inputs import TrainingInput
+from sagemaker.serializers import CSVSerializer
+from sagemaker.deserializers import CSVDeserializer
+from sagemaker.estimator import Estimator
+
+# ----------------------------------------------------------------
+# 1. Data Preparation
+# ----------------------------------------------------------------
+
+def read_s3(bucket, key):
+    """
+    Reads a CSV file from S3 into a pandas DataFrame.
+    """
+    s = boto3.Session()
+    c = s.client("s3")
+    obj = c.get_object(Bucket=bucket, Key=key)
+    return pd.read_csv(StringIO(obj["Body"].read().decode("utf-8")))
+
+def fix_id(x):
+    """
+    Adjust sample ID to standardize for merging with clinical data.
+    """
+    x = str(x)
+    if x.endswith("TCGA"):
+        x = x[:-4]
+    x = x.split(".")[0]
+    return "TCGA-" + x
+
+def run_pipeline():
+    bucket_name = "breast-cancer-proteomes"
+    proteome_key = "77_cancer_proteomes_CPTAC_itraq.csv"
+    clinical_key = "clinical_data_breast_cancer.csv"
+    pam50_key = "PAM50_proteins.csv"
+
+    # Read the three datasets
+    dp = read_s3(bucket_name, proteome_key)
+    dc = read_s3(bucket_name, clinical_key)
+    dp50 = read_s3(bucket_name, pam50_key)
+
+    # Rename clinical ID column
+    if "Complete TCGA ID" not in dc.columns:
+        raise ValueError("No 'Complete TCGA ID' in clinical data.")
+    dc.rename(columns={"Complete TCGA ID": "Patient_ID"}, inplace=True)
+
+    # Check proteomics file structure
+    needed_cols = {"RefSeq_accession_number", "gene_symbol", "gene_name"}
+    if not needed_cols.issubset(dp.columns):
+        raise ValueError("Proteomics data missing required columns.")
+
+    # Filter proteomics by Gene if both have 'Gene'
+    if "Gene" in dp.columns and "Gene" in dp50.columns:
+        dp = dp[dp["Gene"].isin(dp50["Gene"])]
+
+    # Melt wide -> long
+    base_cols = ["RefSeq_accession_number", "gene_symbol", "gene_name"]
+    dm = pd.melt(dp, id_vars=base_cols, var_name="Sample_ID", value_name="Expression")
+    dm["Sample_ID"] = dm["Sample_ID"].astype(str)
+    dm["Patient_ID"] = dm["Sample_ID"].apply(fix_id)
+
+    # Merge with clinical
+    dfm = pd.merge(dm, dc, on="Patient_ID", how="inner")
+    if dfm.empty:
+        raise ValueError("No rows after merging. Check fix_id logic or clinical IDs.")
+
+    # Remove duplicates
+    dfm.drop_duplicates(inplace=True)
+
+    # Impute numeric & categorical
+    numeric_cols = dfm.select_dtypes(include=[np.number]).columns
+    cat_cols = dfm.select_dtypes(include=["object", "category"]).columns
+    si = SimpleImputer(strategy="mean")
+    sf = SimpleImputer(strategy="most_frequent")
+    dfm[numeric_cols] = si.fit_transform(dfm[numeric_cols])
+    dfm[cat_cols] = sf.fit_transform(dfm[cat_cols])
+
+    # Choose a subset of columns as features
+    features = []
+    if "Expression" in dfm.columns:
+        features.append("Expression")
+    for col in [
+        "Age at Initial Pathologic Diagnosis",
+        "ER Status",
+        "PR Status",
+        "HER2 Final Status",
+        "AJCC Stage"
+    ]:
+        if col in dfm.columns:
+            features.append(col)
+
+    df = dfm[features].copy()
+
+    # Create or assign target
+    if "OS event" in dfm.columns:
+        df["Target"] = dfm["OS event"]
+    else:
+        df["Target"] = np.random.choice([0, 1], size=len(dfm))
+
+    # Encode target if needed
+    if df["Target"].dtype == "object":
+        le = LabelEncoder()
+        df["Target"] = le.fit_transform(df["Target"])
+
+    # One-hot encode categorical features
+    cat_features = df.select_dtypes(include=["object", "category"]).columns
+    cat_features = [c for c in cat_features if c != "Target"]
+    dfe = df.copy()
+    for c in cat_features:
+        dfe = pd.concat([dfe.drop(c, axis=1), pd.get_dummies(dfe[c], prefix=c)], axis=1)
+
+    # Scale numeric features
+    num_cols = [c for c in dfe.select_dtypes(include=[np.number]).columns if c != "Target"]
+    scaler = StandardScaler()
+    dfe[num_cols] = scaler.fit_transform(dfe[num_cols])
+
+    # Separate X, y
+    X = dfe.drop("Target", axis=1)
+    y = dfe["Target"]
+
+    # Split 70/20/10 BEFORE SMOTE
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X, y, test_size=0.3, stratify=y, random_state=42
+    )
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp, test_size=0.33, stratify=y_temp, random_state=42
+    )
+
+    # Apply SMOTE ONLY to the training set
+    sm = SMOTE(random_state=42)
+    X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+
+    print("Train:", X_train_res.shape, y_train_res.shape)
+    print("Validation:", X_val.shape, y_val.shape)
+    print("Test:", X_test.shape, y_test.shape)
+
+    # Quick plots of distribution
+    if "Expression" in X_train_res.columns:
+        plt.hist(X_train_res["Expression"], bins=30)
+        plt.title("Distribution of Expression (Train)")
+        plt.xlabel("Expression")
+        plt.ylabel("Frequency")
+        plt.show()
+
+    # Target distribution (after SMOTE)
+    uniq, counts = np.unique(y_train_res, return_counts=True)
+    plt.bar(uniq.astype(str), counts)
+    plt.title("Training Set Target Distribution (After SMOTE)")
+    plt.xlabel("Target Class")
+    plt.ylabel("Count")
+    plt.show()
+
+    # Return final sets
+    return X_train_res, y_train_res, X_val, y_val, X_test, y_test
+
+def main():
+    # Run pipeline
+    X_train, y_train, X_val, y_val, X_test, y_test = run_pipeline()
+
+    # Create CSVs for training/validation
+    train_data = pd.concat([y_train, X_train], axis=1)
+    val_data = pd.concat([y_val, X_val], axis=1)
+
+    # Save locally
+    train_data.to_csv("train.csv", index=False, header=False)
+    val_data.to_csv("validation.csv", index=False, header=False)
+
+    # ----------------------------------------------------------------
+    # 2. Upload Data to S3
+    # ----------------------------------------------------------------
+    session = sagemaker.Session()
+    bucket_for_training = session.default_bucket()  
+    prefix = "breast-cancer-xgboost"
+
+    train_s3_uri = session.upload_data(
+        path="train.csv", 
+        bucket=bucket_for_training,
+        key_prefix=f"{prefix}/data"
+    )
+    val_s3_uri = session.upload_data(
+        path="validation.csv",
+        bucket=bucket_for_training,
+        key_prefix=f"{prefix}/data"
+    )
+
+    print("Train data uploaded to:", train_s3_uri)
+    print("Validation data uploaded to:", val_s3_uri)
+
+    # ----------------------------------------------------------------
+    # 3. Train Using a Built-In XGBoost Algorithm
+    # ----------------------------------------------------------------
+    region = session.boto_region_name
+    container = sagemaker.image_uris.retrieve(
+        framework="xgboost",
+        region=region,
+        version="1.5-1"  # or the latest supported version should work too
+    )
+
+    # Hyperparameters for XGBoost
+    hyperparameters = {
+        "max_depth": "5",
+        "eta": "0.1",
+        "gamma": "4",
+        "min_child_weight": "6",
+        "objective": "binary:logistic",
+        "num_round": "100", 
+        "eval_metric": "auc"
+    }
+
+    xgb_estimator = Estimator(
+        image_uri=container,
+        hyperparameters=hyperparameters,
+        role=sagemaker.get_execution_role(),
+        instance_count=1,
+        instance_type="ml.m5.large",
+        volume_size=5,  # in GB
+        max_run=3600,
+        sagemaker_session=session
+    )
+
+    # Define data channels
+    train_input = TrainingInput(
+        s3_data=train_s3_uri,
+        content_type="text/csv"
+    )
+    val_input = TrainingInput(
+        s3_data=val_s3_uri,
+        content_type="text/csv"
+    )
+
+    # Fit model
+    xgb_estimator.fit({"train": train_input, "validation": val_input}, wait=True)
+
+    # ----------------------------------------------------------------
+    # 4. Model Evaluation Demo
+    # ----------------------------------------------------------------
+    predictor = xgb_estimator.deploy(
+        initial_instance_count=1,
+        instance_type="ml.m5.large",
+        serializer=CSVSerializer(),
+        deserializer=CSVDeserializer()
+    )
+
+    # Prepare test data for inference (we won't send the label, just features)
+    test_data_no_label = X_test.copy()
+    test_csv = test_data_no_label.to_csv(index=False, header=False)
+
+    # Predict
+    prediction_str = predictor.predict(test_csv)
+    predictions = [float(row[0]) for row in prediction_str.splitlines()]
+
+    # Evaluate (simple example being a threshold at 0.5 to convert to classes)
+    y_pred = [1 if p >= 0.5 else 0 for p in predictions]
+    from sklearn.metrics import classification_report
+    print(classification_report(y_test, y_pred))
+
+    # Clean up the endpoint (to avoid extra cost!)
+    predictor.delete_endpoint()
+
+if __name__ == "__main__":
+    main()
